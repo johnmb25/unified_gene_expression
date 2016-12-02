@@ -27,4 +27,4 @@ counts <- data.frame(txi$counts)
 names <- sapply(files, function(x) strsplit(x,"\\/")[[1]][1])
 colnames(counts) <- names
 
-save(counts, file = "data/bryanjm/rawData/unified_gene_expression/counts_processed.Rdata")
+save(counts, file = "/data/bryanjm/rawData/unified_gene_expression/counts_processed.Rdata")
