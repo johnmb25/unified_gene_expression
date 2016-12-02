@@ -3,14 +3,148 @@ title: "WGCNA"
 output: html_notebook
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+# Code adapted from WGCNA tutorials 
+(https://labs.genetics.ucla.edu/horvath/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/index.html)
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+We begin by loading in the necessary packages and data. 
 
 ```{r}
-plot(cars)
+library(WGCNA)
+library(dplyr)
+library(DESeq2)
+
+load("~/Documents/git/unified_gene_expression/data/counts_processed.Rdata")
+load("~/Documents/git/unified_gene_expression/data/core_metaData.Rdata")
+
+expr = t(counts)
+meta = core_tight
+
+dim(expr)
+dim(meta)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+We left_join the meta sheet (for the *sample_accession* variable) and the expression matrix. We then subset the resulting matrix into *RPE*, *Retina*, and *RPE+Retina* tables.
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+```{r}
+sample_accession = rownames(expr)
+expr.temp = as.data.frame(cbind(sample_accession, expr))
+
+rownames(expr.temp)[1:5]
+colnames(expr.temp)[1:5]
+
+expr.meta = left_join(expr.temp, meta, by = "sample_accession") %>% select(-run_accession) %>% distinct()
+
+expr.temp$sample_accession = as.character(expr.temp$sample_accession)
+
+expr.temp$sample_accession[1:5]
+expr.meta$sample_accession[1:5]
+identical(expr.temp$sample_accession, expr.meta$sample_accession)
+
+rownames(expr.meta) = expr.meta$sample_accession
+
+expr.meta[1:5, 1:3]
+
+class(expr.meta)
+table(expr.meta$Tissue)
+
+expr.retina = filter(expr.meta, Tissue == "Retina")
+expr.rpe = filter(expr.meta, Tissue == "RPE")
+expr.retina.rpe = filter(expr.meta, Tissue == "Retina" | Tissue == "RPE")
+
+rownames(expr.retina) = expr.retina$sample_accession
+rownames(expr.rpe) = expr.rpe$sample_accession
+rownames(expr.retina.rpe) = expr.retina.rpe$sample_accession
+
+expr.retina = expr.retina[, c(2:ncol(expr.retina), 1)]
+expr.rpe = expr.rpe[, c(2:ncol(expr.rpe), 1)]
+expr.retina.rpe = expr.retina.rpe[, c(2:ncol(expr.retina.rpe), 1)]
+
+expr.retina[1:5, 1:5]
+expr.rpe[1:5, 1:5]
+expr.retina.rpe[1:5, 1:5]
+
+dim(expr.retina)
+dim(expr.rpe)
+dim(expr.retina.rpe)
+
+save(expr.retina, file = "~/Documents/git/unified_gene_expression/data/counts_retina.Rdata")
+save(expr.rpe, file = "~/Documents/git/unified_gene_expression/data/counts_rpe.Rdata")
+save(expr.retina.rpe, file = "~/Documents/git/unified_gene_expression/data/counts_retina_rpe.Rdata")
+```
+
+We first build the network with just the samples from the retina.
+
+```{r}
+#####################################
+##         Retina Network          ##
+#####################################
+
+meta.retina = expr.retina[, which(colnames(expr.retina) == "study_accession"):ncol(expr.retina)]
+expr.retina = expr.retina[, 1:(which(colnames(expr.retina) == "study_accession") - 1)]
+
+expr.retina[] = sapply(expr.retina, function(f) as.numeric(levels(f))[f])
+
+save(expr.retina, file = "~/Documents/git/unified_gene_expression/data/expr_retina.Rdata")
+save(meta.retina, file = "~/Documents/git/unified_gene_expression/data/meta_retina.Rdata")
+```
+
+We engage in some pre-processing of the data. We first filter out any genes for which at least 10% of samples have less than 10 counts. We then apply a variance stabilizing transformation and check to see that all the genes are satisfactory (in terms of variance and low expression).
+
+```{r}
+min.expr.indices = which(colSums(expr.retina >= 10) >= 0.9*nrow(expr.retina))
+expr.retina = expr.retina[, min.expr.indices]
+
+expr.retina.var.stab = varianceStabilizingTransformation(round(as.matrix(expr.retina)))
+save(expr.retina.var.stab, file = "~/Documents/git/unified_gene_expression/data/counts_retina_varStab.Rdata")
+
+gsg = goodSamplesGenes(expr.retina.var.stab)
+gsg$allOK
+```
+
+We perform hierarchical cluster (using average linkage) on the samples to look for any outliers. We notice that the samples are clustering based on which study they came from. 
+
+```{r}
+sampleTree = hclust(dist(expr.retina.var.stab), method = "average")
+
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="")
+
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(as.numeric(factor(meta.retina$study_accession)), signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree, traitColors,
+                    groupLabels = "study_accession",
+                    main = "Sample dendrogram and study source")
+```
+
+We further investigate these batch issues using t-SNE (t-Stochastic Neighbor Embedding).
+
+```{r}
+## We find in the dendrogram plot that there are batch issues with the different data sources
+## This is further demonstrated in a t-SNE plot
+library(Rtsne)
+library(ggplot2)
+
+set.seed(47)
+
+perplexities = seq(10, 30, by = 10)
+
+for(p in perplexities){
+  
+  tsne_out = Rtsne(as.matrix(expr.retina.var.stab), perplexity = p, check_duplicates = F, theta = 0.0)
+  tsne_plot = data.frame(tsne_out$Y)
+  
+  p1 = tsne_plot %>%
+    ggplot(aes(x=X1,y=X2,colour=factor(meta.retina$study_accession))) + 
+    geom_point(size=4) + ggtitle(paste0("t-sne. Perplexity = ", p))
+  print(p1)
+  
+  p2 = tsne_plot %>%
+    ggplot(aes(x=X1,y=X2,colour=factor(meta.retina$Sub_Tissue))) + 
+    geom_point(size=4) + ggtitle(paste0("t-sne. Perplexity = ", p))
+  print(p2)
+}
+```
+
+
+
+
