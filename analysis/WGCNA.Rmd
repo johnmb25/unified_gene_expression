@@ -1,6 +1,8 @@
 ---
 title: "WGCNA"
-output: html_notebook
+output:
+  html_document: default
+  html_notebook: default
 ---
 
 # Code adapted from WGCNA tutorials 
@@ -8,10 +10,16 @@ output: html_notebook
 
 We begin by loading in the necessary packages and data. 
 
-```{r}
+```{r, message = FALSE}
 library(WGCNA)
 library(dplyr)
+library(tidyr)
 library(DESeq2)
+library(Rtsne)
+library(ggplot2)
+library(topGO)
+library(sva)
+library(biomaRt)
 
 load("~/Documents/git/unified_gene_expression/data/counts_processed.Rdata")
 load("~/Documents/git/unified_gene_expression/data/core_metaData.Rdata")
@@ -25,14 +33,14 @@ dim(meta)
 
 We left_join the meta sheet (for the *sample_accession* variable) and the expression matrix. We then subset the resulting matrix into *RPE*, *Retina*, and *RPE+Retina* tables.
 
-```{r}
+```{r, message = FALSE}
 sample_accession = rownames(expr)
 expr.temp = as.data.frame(cbind(sample_accession, expr))
 
 rownames(expr.temp)[1:5]
 colnames(expr.temp)[1:5]
 
-expr.meta = left_join(expr.temp, meta, by = "sample_accession") %>% select(-run_accession) %>% distinct()
+expr.meta = left_join(expr.temp, meta, by = "sample_accession") %>% dplyr::select(-run_accession) %>% distinct()
 
 expr.temp$sample_accession = as.character(expr.temp$sample_accession)
 
@@ -74,7 +82,7 @@ save(expr.retina.rpe, file = "~/Documents/git/unified_gene_expression/data/count
 
 We first build the network with just the samples from the retina.
 
-```{r}
+```{r, message = FALSE}
 #####################################
 ##         Retina Network          ##
 #####################################
@@ -90,7 +98,7 @@ save(meta.retina, file = "~/Documents/git/unified_gene_expression/data/meta_reti
 
 We engage in some pre-processing of the data. We first filter out any genes for which at least 10% of samples have less than 10 counts. We then apply a variance stabilizing transformation and check to see that all the genes are satisfactory (in terms of variance and low expression).
 
-```{r}
+```{r, message = FALSE}
 min.expr.indices = which(colSums(expr.retina >= 10) >= 0.9*nrow(expr.retina))
 expr.retina = expr.retina[, min.expr.indices]
 
@@ -103,26 +111,20 @@ gsg$allOK
 
 We perform hierarchical cluster (using average linkage) on the samples to look for any outliers. We notice that the samples are clustering based on which study they came from. 
 
-```{r}
+```{r, message = FALSE}
 sampleTree = hclust(dist(expr.retina.var.stab), method = "average")
-
-plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="")
 
 # Convert traits to a color representation: white means low, red means high, grey means missing entry
 traitColors = numbers2colors(as.numeric(factor(meta.retina$study_accession)), signed = FALSE);
 # Plot the sample dendrogram and the colors underneath.
 plotDendroAndColors(sampleTree, traitColors,
                     groupLabels = "study_accession",
-                    main = "Sample dendrogram and study source")
+                    main = "Sample dendrogram and study source (study_accesssion)")
 ```
 
-We further investigate these batch issues using t-SNE (t-Stochastic Neighbor Embedding).
+We find in the dendrogram plot that there are batch effects with the different data sources. We further investigate these batch issues using t-SNE (t-Stochastic Neighbor Embedding).
 
-```{r}
-## We find in the dendrogram plot that there are batch issues with the different data sources
-## This is further demonstrated in a t-SNE plot
-library(Rtsne)
-library(ggplot2)
+```{r, message = FALSE}
 
 set.seed(47)
 
@@ -145,6 +147,409 @@ for(p in perplexities){
 }
 ```
 
+We then use Combat (from the **sva** package) to adjust for the batch issues (fetal vs. adult, study source). 
 
+```{r, message = FALSE}
+expr.retina.combat = as.data.frame(t(expr.retina.var.stab))
+
+# Remove the data from studies that have very few observations
+small.study.indices = which(meta.retina$study_accession %in% c("SRP002881", "SRP015336"))
+expr.retina.combat = expr.retina.combat[, -(small.study.indices)]
+meta.retina.combat = meta.retina[-(small.study.indices), ]
+
+meta.retina.combat.mergeVar = meta.retina.combat %>%
+  unite(study_subTissue, study_accession, Sub_Tissue)
+
+modCombat = model.matrix(~1, data = meta.retina.combat.mergeVar)
+combat_expr = t(ComBat(dat = expr.retina.combat, batch = factor(meta.retina.combat.mergeVar$study_subTissue), 
+                     mod = modCombat, par.prior=TRUE, prior.plots=FALSE))
+```
+
+Following batch correction with Combat, we see that the batch issues are resolved, as clustering is minimal in t-SNE.
+
+```{r, message = FALSE}
+set.seed(47)
+
+perplexities = seq(10, 30, by = 10)
+
+for(p in perplexities){
+  
+  tsne_out = Rtsne(as.matrix(combat_expr), perplexity = p, check_duplicates = F, theta = 0.0)
+  tsne_plot = data.frame(tsne_out$Y)
+  
+  p1 = tsne_plot %>%
+    ggplot(aes(x=X1,y=X2,colour=factor(meta.retina.combat.mergeVar$study_subTissue))) + 
+    geom_point(size=4) + ggtitle(paste0("t-sne (post-Combat adjustment). Perplexity = ", p))
+  print(p1)
+  
+  p2 = tsne_plot %>%
+    ggplot(aes(x=X1,y=X2,colour=factor(meta.retina.combat.mergeVar$study_subTissue))) + 
+    geom_point(size=4) + ggtitle(paste0("t-sne (post-Combat adjustment). Perplexity = ", p))
+  print(p2)
+}
+```
+
+Following batch correction, we see that the distinct clusters are no longer present. Now we recluster the samples with hierarchical clustering (average linkage). The dendrogram shows that the batch issues have been resolved (at least partially). 
+
+```{r, message = FALSE}
+sampleTree.combat = hclust(dist(combat_expr), method = "average")
+
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(as.numeric(factor(meta.retina.combat.mergeVar$study_subTissue)), signed = FALSE);
+# Plot the sample dendrogram and the colors underneath.
+plotDendroAndColors(sampleTree.combat, traitColors,
+                    groupLabels = "study_accession",
+                    main = "Sample dendrogram and trait heatmap")
+
+```
+
+Now that we have resolved the batch effect issue, we can resume building a WGCNA network, exploring both signed and unsigned networks. We first begin with automatic network building.
+
+```{r, message = FALSE}
+options(stringsAsFactors = FALSE)
+
+####################################
+##           Unsigned             ##
+####################################
+
+# Choose a set of soft-thresholding powers
+powers.unsigned = c(c(1:10), seq(from = 12, to=30, by=2))
+# Call the network topology analysis function
+sft.unsigned = pickSoftThreshold(combat_expr, powerVector = powers.unsigned, networkType = "unsigned")
+
+# With a power of 14 we get
+# Power SFT.R.sq  slope truncated.R.sq mean.k. median.k. max.k.
+# 14     0.8070   -1.530        0.950   70.90    31.600  502.0
+
+####################################
+##           Signed             ##
+####################################
+
+# Choose a set of soft-thresholding powers
+powers.signed = c(c(1:10), seq(from = 12, to=30, by=2))
+# Call the network topology analysis function
+sft.signed = pickSoftThreshold(combat_expr, powerVector = powers.signed, networkType = "signed")
+
+# With a power of 30 we get
+# Power SFT.R.sq  slope truncated.R.sq mean.k. median.k. max.k.
+# 30    0.8030    -1.550      0.950    70.7      34.0    478
+
+```
+
+We achieve scale-free topology indices of 0.8 for powers of 14 and 30 for unsigned and signed networks, respectively. We build the networks using these power parameters. Upon examining the resulting gene dendrograms, it's clear that the unsigned network is superior.
+
+```{r, message = FALSE}
+net.unsigned = blockwiseModules(combat_expr, power = 14, maxBlockSize = 14000,
+                       TOMType = "unsigned", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.1,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       verbose = 3)
+
+net.signed = blockwiseModules(combat_expr, power = 30, maxBlockSize = 14000,
+                       TOMType = "signed", minModuleSize = 30,
+                       reassignThreshold = 0, mergeCutHeight = 0.05,
+                       numericLabels = TRUE, pamRespectsDendro = FALSE,
+                       verbose = 3)
+
+save(net.unsigned, file = "~/Documents/git/unified_gene_expression/data/retina_net_unsigned.Rdata")
+save(net.signed, file = "~/Documents/git/unified_gene_expression/data/retina_net_signed.Rdata")
+
+# Examining number of modules
+table(net.unsigned$colors)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net.unsigned$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net.unsigned$dendrograms[[1]], mergedColors[net.unsigned$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+# Examining number of modules
+table(net.signed$colors)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(net.signed$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(net.signed$dendrograms[[1]], mergedColors[net.signed$blockGenes[[1]]],
+                    "Module colors",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+
+```
+
+# Building a network step-by-step
+
+We now consider building a network using the TOM (Topological Overlap Matrix) and hierarchical clustering, as opposed to the automatic network construction performed above.
+
+```{r, message = FALSE}
+softPower = 14
+adjacency = adjacency(combat_expr, power = softPower)
+
+# Turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency)
+dissTOM = 1-TOM
+
+# Call the hierarchical clustering function
+geneTree = hclust(as.dist(dissTOM), method = "average");
+# Plot the resulting clustering tree (dendrogram)
+plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",
+     labels = FALSE, hang = 0.04)
+
+
+
+# We like large modules, so we set the minimum module size relatively high:
+minModuleSize = 30;
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                deepSplit = 2, pamRespectsDendro = FALSE,
+                minClusterSize = minModuleSize);
+table(dynamicMods)
+
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.0005,
+                    addGuide = TRUE, guideHang = 0.05,
+                    main = "Gene dendrogram and module colors")
+
+```
+
+We then calculate the eigengenes for the different modules.
+
+```{r, message = FALSE}
+# Calculate eigengenes
+MEList = moduleEigengenes(combat_expr, colors = dynamicColors)
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+# Plot the result
+plot(METree, main = "Clustering of module eigengenes",
+     xlab = "", sub = "")
+
+MEDissThres = 0.05   # used to be 0.15
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")
+# Call an automatic merging function
+merge = mergeCloseModules(combat_expr, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+# The merged module colors
+mergedColors = merge$colors
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs
+
+```
+
+
+```{r, message = FALSE}
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+                    c("Dynamic Tree Cut", "Merged dynamic"),
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+```{r, message = FALSE}
+# Rename to moduleColors
+moduleColors = mergedColors
+# Construct numerical labels corresponding to the colors
+colorOrder = c("grey", standardColors(50));
+moduleLabels = match(moduleColors, colorOrder)-1;
+MEs = mergedMEs;
+# Save module colors and labels for use in subsequent parts
+save(MEs, moduleLabels, moduleColors, geneTree, file = "~/Documents/git/unified_gene_expression/data/networkConstruction-stepByStep.RData")
+```
+
+
+# Building a network step-by-step
+
+We now build a signed network.
+
+```{r, message = FALSE}
+powers = c(1:10, seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(combat_expr, powerVector = powers, verbose = 5)
+
+{# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.80,col="red")}
+# Mean connectivity as a function of the soft-thresholding power
+{plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers,col="red")}
+
+softPower = 14
+adjacency = adjacency(combat_expr, power = softPower)
+
+# Turn adjacency into topological overlap
+TOM = TOMsimilarity(adjacency)
+dissTOM = 1-TOM
+
+# Call the hierarchical clustering function
+geneTree = hclust(as.dist(dissTOM), method = "average");
+# Plot the resulting clustering tree (dendrogram)
+plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",
+     labels = FALSE, hang = 0.04)
+
+
+# We like large modules, so we set the minimum module size relatively high:
+minModuleSize = 30;
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                deepSplit = 2, pamRespectsDendro = FALSE,
+                minClusterSize = minModuleSize);
+table(dynamicMods)
+
+# Convert numeric lables into colors
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.0003,
+                    addGuide = TRUE, guideHang = 0.05,
+                    main = "Gene dendrogram and module colors")
+
+```
+
+We then calculate the eigengenes.
+
+```{r, message = FALSE}
+# Calculate eigengenes
+MEList = moduleEigengenes(combat_expr, colors = dynamicColors)
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+# Plot the result
+{plot(METree, main = "Clustering of module eigengenes",
+     xlab = "", sub = "")
+
+MEDissThres = 0.1   # used to be 0.15
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")}
+# Call an automatic merging function
+merge = mergeCloseModules(combat_expr, dynamicColors, cutHeight = MEDissThres, verbose = 3)
+# The merged module colors
+mergedColors = merge$colors
+table(mergedColors)
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs
+
+```
+
+```{r, message = FALSE}
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+                    c("Dynamic Tree Cut", "Merged dynamic"),
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05)
+```
+
+# Network Visualization
+
+We obtain the TOM and visualize the network using a heat map. Plotting on all genes is very computationally intensive, so here we just compute the TOM on a randomly selected subset of 400 genes.
+
+```{r, message = FALSE}
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^7;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA;
+# Call the plot function
+
+# plotting on 
+#TOMplot(plotTOM, geneTree, mergedColors, main = "Network heatmap plot, all genes")
+
+
+nSelect = 400
+# For reproducibility, we set the random seed
+set.seed(47);
+select = sample(ncol(combat_expr), size = nSelect);
+selectTOM = dissTOM[select, select];
+# There’s no simple way of restricting a clustering tree to a subset of genes, so we must re-cluster.
+selectTree = hclust(as.dist(selectTOM), method = "average")
+selectColors = mergedColors[select];
+# Taking the dissimilarity to a power, say 10, makes the plot more informative by effectively changing
+# the color palette; setting the diagonal to NA also improves the clarity of the plot
+plotDiss = selectTOM^7;
+diag(plotDiss) = NA;
+TOMplot(plotDiss, selectTree, selectColors, main = "Network heatmap plot, selected genes")
+```
+
+# Pathway Analysis (Retina Network)
+
+```{r, message = FALSE}
+library(GO.db)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+
+# Load annotation file
+load("~/Documents/git/unified_gene_expression/data/gencode_v25_annotation.Rdata")
+# Read in the probe annotation
+annot = gencode_v25_annotation %>% dplyr::select(-Transcript.ID) %>% distinct()
+n_distinct(annot$Gene.ID)
+n_distinct(annot$Gene.Name)
+
+# Removing alternative splicing artifacts
+annot[, 'Gene.ID'] = gsub("\\.[^.]*$", "", annot$Gene.ID)
+annot = annot %>% distinct()
+dim(annot)
+
+# Match probes in the data set to the probe IDs in the annotation file 
+probes = colnames(combat_expr)
+probes2annot = which(annot$Gene.Name %in% probes)
+# Get the corresponding Gene IDs
+allGeneIDs = annot[probes2annot, ]
+# (For now - need new method) eliminate redundancy for gene names
+allGeneIDs = allGeneIDs[!duplicated(allGeneIDs$Gene.Name),]
+dim(allGeneIDs)
+
+
+mart <- useMart("ensembl")
+datasets <- listDatasets(mart)
+mart<-useDataset("hsapiens_gene_ensembl",mart)
+entrez_ids = getBM(attributes=c("ensembl_gene_id", "entrezgene"),filters="ensembl_gene_id",values=allGeneIDs, mart=mart)
+
+test = merge(allGeneIDs,entrez_ids,by.x="Gene.ID",by.y="ensembl_gene_id") %>% distinct()
+
+moduleColors = labels2colors(net.unsigned$colors)
+
+# $ Choose interesting modules
+intModules = c("brown", "green", "red")
+for (module in intModules)
+{
+  # Select module probes
+  modGenes = (moduleColors==module)
+  # Get their entrez ID codes
+  modGeneIDs = allGeneIDs[modGenes];
+  # Write them into a file
+  fileName = paste("~/Documents/git/unified_gene_expression/results/GeneIDs-", module, ".txt", sep="");
+  write.table(as.data.frame(modGeneIDs), file = fileName,
+              row.names = FALSE, col.names = FALSE)
+}
+# As background in the enrichment analysis, we will use all probes in the analysis.
+fileName = paste("~/Documents/git/unified_gene_expression/results/GeneIDs-all.txt", sep="");
+write.table(as.data.frame(allGeneIDs), file = fileName,
+            row.names = FALSE, col.names = FALSE)
+```
+
+**Issue to resolve:** converting from ensembl gene IDs to entrez gene IDs.
+
+```{r, message = FALSE}
+#GOenr = GOenrichmentAnalysis(moduleColors, allGeneIDs, organism = "human", nBestP = 10)
+```
+
+# Moving forward
+* Build network on RPE tissue samples.
+* Consider whether it's appropriate to correct for fetal vs. adult.
+* Identify the goal for pathway analysis.
+* Compare advantages/disadvantages of different networks considered.
+* Compare Retina and RPE networks.
+    + PPT: https://labs.genetics.ucla.edu/horvath/CoexpressionNetwork/WORKSHOP/2013/Miller/Miller1_ComparingMouseAndHumanBrain.pdf
+    + Lecture: https://www.youtube.com/watch?v=aBD67YmCBK4
 
 
