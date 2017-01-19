@@ -1,0 +1,240 @@
+---
+title: "R Notebook"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+# Random Forests
+
+We explore using random forests to identify which genes are most important in differentiating between eye tissue and other tissues. 
+
+```{r}
+# Variable to determine whether to use:
+# FALSE: previously computed datasets
+# TRUE: compute new datasets
+freshRun = TRUE
+```
+
+We load in the necessary packages and data
+
+```{r, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(randomForest)
+library(caret)
+
+load("~/Documents/git/unified_gene_expression/data/counts_processed.Rdata")
+load("~/Documents/git/unified_gene_expression/data/core_metaData.Rdata")
+
+expr = t(counts)
+meta = core_tight
+
+dim(expr)
+dim(meta)
+```
+
+We left_join the meta sheet (for the *sample_accession* variable) and the expression matrix. We then subset the resulting matrix into *RPE*, *Retina*, and *RPE+Retina* tables.
+
+```{r, message = FALSE}
+if(freshRun){
+  sample_accession = rownames(expr)
+  expr.temp = as.data.frame(cbind(sample_accession, expr))
+  
+  rownames(expr.temp)[1:5]
+  colnames(expr.temp)[1:5]
+  
+  expr.meta = left_join(expr.temp, meta, by = "sample_accession") %>% dplyr::select(-run_accession) %>% distinct()
+  
+  expr.temp$sample_accession = as.character(expr.temp$sample_accession)
+  
+  expr.temp$sample_accession[1:5]
+  expr.meta$sample_accession[1:5]
+  identical(expr.temp$sample_accession, expr.meta$sample_accession)
+  
+  rownames(expr.meta) = expr.meta$sample_accession
+  
+  expr.meta[1:5, 1:3]
+  
+  class(expr.meta)
+  table(expr.meta$Tissue)
+  
+  expr.meta <- filter(expr.meta, Origin == "Tissue")
+  
+  class(expr.meta)
+  table(expr.meta$Tissue)
+  
+  expr.retina = filter(expr.meta, Tissue == "Retina")
+  expr.rpe = filter(expr.meta, Tissue == "RPE")
+  expr.retina.rpe = filter(expr.meta, Tissue == "Retina" | Tissue == "RPE")
+  
+  expr.meta <- filter(expr.meta, Tissue != "Brain" & Tissue != "Cornea" & Tissue != "Retina" & Tissue != "RPE")
+  
+  set.seed(47)
+  expr.comp.retina <- expr.meta %>% group_by(Tissue) %>% sample_n(size = 4) %>% ungroup() %>% as.data.frame()
+  set.seed(47)
+  expr.comp.rpe <- expr.meta %>% group_by(Tissue) %>% sample_n(size = 2) %>% ungroup() %>% as.data.frame()
+  set.seed(47)
+  expr.comp.retina.rpe <- expr.meta %>% group_by(Tissue) %>% sample_n(size = 6) %>% ungroup() %>% as.data.frame()
+  
+  # Eye tissues
+  rownames(expr.retina) = expr.retina$sample_accession
+  rownames(expr.rpe) = expr.rpe$sample_accession
+  rownames(expr.retina.rpe) = expr.retina.rpe$sample_accession
+  
+  expr.retina = expr.retina[, c(2:ncol(expr.retina), 1)]
+  expr.rpe = expr.rpe[, c(2:ncol(expr.rpe), 1)]
+  expr.retina.rpe = expr.retina.rpe[, c(2:ncol(expr.retina.rpe), 1)]
+  ###
+  # Other tissues
+  rownames(expr.comp.retina) = expr.comp.retina$sample_accession
+  rownames(expr.comp.rpe) = expr.comp.rpe$sample_accession
+  rownames(expr.comp.retina.rpe) = expr.comp.retina.rpe$sample_accession
+  
+  expr.comp.retina = expr.comp.retina[, c(2:ncol(expr.comp.retina), 1)]
+  expr.comp.rpe = expr.comp.rpe[, c(2:ncol(expr.comp.rpe), 1)]
+  expr.comp.retina.rpe = expr.comp.retina.rpe[, c(2:ncol(expr.comp.retina.rpe), 1)]
+  ###
+  
+  dim(expr.retina)
+  dim(expr.comp.retina)
+  dim(expr.rpe)
+  dim(expr.comp.rpe)
+  dim(expr.retina.rpe)
+  dim(expr.comp.retina.rpe)
+  
+  save(expr.retina, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_retina.Rdata")
+  save(expr.rpe, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_rpe.Rdata")
+  save(expr.retina.rpe, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_retina_rpe.Rdata")
+  save(expr.comp.retina, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_retina.Rdata")
+  save(expr.comp.rpe, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_rpe.Rdata")
+  save(expr.comp.retina.rpe, file = "~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_retina_rpe.Rdata")
+}else{
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_retina.Rdata")
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_rpe.Rdata")
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_retina_rpe.Rdata")
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_retina.Rdata")
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_rpe.Rdata")
+  load("~/Documents/git/unified_gene_expression/data/RF_comparisons/counts_composite_retina_rpe.Rdata")
+}
+
+```
+
+# Retina
+
+We now build the random forest for the retina samples. We find that with $nTree = 1000$, the random forest perfectly classifies the samples. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 40 of the genes in these groups are the same.
+
+```{r, message = FALSE}
+#####################################
+##         Retina RF               ##
+#####################################
+
+meta.retina.rf = expr.retina[, which(colnames(expr.retina) == "study_accession"):ncol(expr.retina)]
+expr.retina.rf = expr.retina[, 1:(which(colnames(expr.retina) == "study_accession") - 1)]
+
+meta.comp.rf = expr.comp.retina[, which(colnames(expr.comp.retina) == "study_accession"):ncol(expr.comp.retina)]
+expr.comp.rf = expr.comp.retina[, 1:(which(colnames(expr.comp.retina) == "study_accession") - 1)]
+
+expr.retina.rf[] = sapply(expr.retina.rf, as.numeric)
+expr.comp.rf[] = sapply(expr.comp.rf, as.numeric)
+
+meta.comp.rf$Tissue = rep("Composite", length(meta.comp.rf$Tissue))
+
+# Combining data
+meta.rf = bind_rows(meta.retina.rf, meta.comp.rf)
+expr.rf = bind_rows(expr.retina.rf, expr.comp.rf)
+
+# Random forest
+set.seed(47)
+rf.retina.comp <- randomForest(x = expr.rf, y = factor(meta.rf$Tissue), ntree = 1000, importance = TRUE)
+rf.retina.comp
+
+varImpPlot(rf.retina.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
+
+impt = importance(rf.retina.comp, scale = TRUE)
+
+genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
+genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+
+length(intersect(rownames(genes.acc), rownames(genes.gini)))
+```
+
+# RPE
+
+We now build the random forest for the RPE samples. We find that with $nTree = 1000$, the random forest only misclassified 1 sample. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 45 of the genes in these groups are the same.
+
+```{r, message = FALSE}
+#####################################
+##         RPE RF                  ##
+#####################################
+
+meta.rpe.rf = expr.rpe[, which(colnames(expr.rpe) == "study_accession"):ncol(expr.rpe)]
+expr.rpe.rf = expr.rpe[, 1:(which(colnames(expr.rpe) == "study_accession") - 1)]
+
+meta.comp.rf = expr.comp.rpe[, which(colnames(expr.comp.rpe) == "study_accession"):ncol(expr.comp.rpe)]
+expr.comp.rf = expr.comp.rpe[, 1:(which(colnames(expr.comp.rpe) == "study_accession") - 1)]
+
+expr.rpe.rf[] = sapply(expr.rpe.rf, as.numeric)
+expr.comp.rf[] = sapply(expr.comp.rf, as.numeric)
+
+meta.comp.rf$Tissue = rep("Composite", length(meta.comp.rf$Tissue))
+
+# Combining data
+meta.rf = bind_rows(meta.rpe.rf, meta.comp.rf)
+expr.rf = bind_rows(expr.rpe.rf, expr.comp.rf)
+
+# Random forest
+set.seed(47)
+rf.rpe.comp <- randomForest(x = expr.rf, y = factor(meta.rf$Tissue), ntree = 1000, importance = TRUE)
+rf.rpe.comp
+
+varImpPlot(rf.rpe.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
+
+impt = importance(rf.rpe.comp, scale = TRUE)
+
+genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
+genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+
+length(intersect(rownames(genes.acc), rownames(genes.gini)))
+```
+
+# Retina+RPE
+
+We now build the random forest for Retina and RPE together. We find that with $nTree = 1000$, the random forest only misclassified 1 sample. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 43 of the genes in these groups are the same.
+
+```{r, message = FALSE}
+#####################################
+##         Retina+RPE RF           ##
+#####################################
+
+meta.retina.rpe.rf = expr.retina.rpe[, which(colnames(expr.retina.rpe) == "study_accession"):ncol(expr.retina.rpe)]
+expr.retina.rpe.rf = expr.retina.rpe[, 1:(which(colnames(expr.retina.rpe) == "study_accession") - 1)]
+
+meta.comp.rf = expr.comp.retina.rpe[, which(colnames(expr.comp.retina.rpe) == "study_accession"):ncol(expr.comp.retina.rpe)]
+expr.comp.rf = expr.comp.retina.rpe[, 1:(which(colnames(expr.comp.retina.rpe) == "study_accession") - 1)]
+
+expr.retina.rpe.rf[] = sapply(expr.retina.rpe.rf, as.numeric)
+expr.comp.rf[] = sapply(expr.comp.rf, as.numeric)
+
+meta.comp.rf$Tissue = rep("Composite", length(meta.comp.rf$Tissue))
+meta.retina.rpe.rf$Tissue = rep("Retina.RPE", length(meta.retina.rpe.rf$Tissue))
+
+# Combining data
+meta.rf = bind_rows(meta.retina.rpe.rf, meta.comp.rf)
+expr.rf = bind_rows(expr.retina.rpe.rf, expr.comp.rf)
+
+# Random forest
+set.seed(47)
+rf.retina.rpe.comp <- randomForest(x = expr.rf, y = factor(meta.rf$Tissue), ntree = 1000, importance = TRUE)
+rf.retina.rpe.comp
+
+varImpPlot(rf.retina.rpe.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
+
+impt = importance(rf.retina.rpe.comp, scale = TRUE)
+
+genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
+genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+
+length(intersect(rownames(genes.acc), rownames(genes.gini)))
+```
+
