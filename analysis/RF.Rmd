@@ -13,7 +13,7 @@ We explore using random forests to identify which genes are most important in di
 # Variable to determine whether to use:
 # FALSE: previously computed datasets
 # TRUE: compute new datasets
-freshRun = TRUE
+freshRun = FALSE
 ```
 
 We load in the necessary packages and data
@@ -23,6 +23,7 @@ library(dplyr)
 library(ggplot2)
 library(randomForest)
 library(caret)
+library(Rtsne)
 
 load("~/Documents/git/unified_gene_expression/data/counts_processed.Rdata")
 load("~/Documents/git/unified_gene_expression/data/core_metaData.Rdata")
@@ -122,7 +123,7 @@ if(freshRun){
 
 # Retina
 
-We now build the random forest for the retina samples. We find that with $nTree = 1000$, the random forest perfectly classifies the samples. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 40 of the genes in these groups are the same.
+We now build the random forest for the retina samples. We find that with $nTree = 1000$, the random forest perfectly classifies the samples. We find the 50 most important genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 41 of the genes in these groups are the same.
 
 ```{r, message = FALSE}
 #####################################
@@ -146,22 +147,30 @@ expr.rf = bind_rows(expr.retina.rf, expr.comp.rf)
 
 # Random forest
 set.seed(47)
-rf.retina.comp <- randomForest(x = expr.rf, y = factor(meta.rf$Tissue), ntree = 1000, importance = TRUE)
+rf.retina.comp <- randomForest(x = expr.rf, y = factor(meta.rf$Tissue), ntree = 1000, importance = TRUE, scale = FALSE)
 rf.retina.comp
 
 varImpPlot(rf.retina.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
 
-impt = importance(rf.retina.comp, scale = TRUE)
+impt.retina = importance(rf.retina.comp, scale = TRUE)
 
-genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
-genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+sum(impt.retina[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))
+
+genes.acc = impt.retina[order(impt.retina[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
+genes.gini = impt.retina[order(impt.retina[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
 
 length(intersect(rownames(genes.acc), rownames(genes.gini)))
+
+sig.genes.list.retina = rownames(impt.retina)[which(impt.retina[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))]
+
+write.table(sig.genes.list.retina, file = "~/Documents/git/unified_gene_expression/results/RF_MDA_sig_retina.txt", 
+            sep = "\n", row.names = F, col.names = F)
+
 ```
 
 # RPE
 
-We now build the random forest for the RPE samples. We find that with $nTree = 1000$, the random forest only misclassified 1 sample. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 45 of the genes in these groups are the same.
+We now build the random forest for the RPE samples. We find that with $nTree = 1000$, the random forest only misclassified 3 samples. We find the 50 most important genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that all 50 of the genes in these groups are the same.
 
 ```{r, message = FALSE}
 #####################################
@@ -190,17 +199,21 @@ rf.rpe.comp
 
 varImpPlot(rf.rpe.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
 
-impt = importance(rf.rpe.comp, scale = TRUE)
+impt.rpe = importance(rf.rpe.comp, scale = TRUE)
 
-genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
-genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+sum(impt.rpe[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))
+
+genes.acc = impt.rpe[order(impt.rpe[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:100, ]
+genes.gini = impt.rpe[order(impt.rpe[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
 
 length(intersect(rownames(genes.acc), rownames(genes.gini)))
+
+sig.genes.list.rpe = rownames(impt.rpe)[which(impt.rpe[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))]
 ```
 
 # Retina+RPE
 
-We now build the random forest for Retina and RPE together. We find that with $nTree = 1000$, the random forest only misclassified 1 sample. We find the 50 most significant genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 43 of the genes in these groups are the same.
+We now build the random forest for Retina and RPE together. We find that with $nTree = 1000$, the random forest only misclassified 3 samples. We find the 50 most important genes based on *MeanDecreaseAccuracy* and *MeanDecreaseGini*, and we find that 41 of the genes in these groups are the same.
 
 ```{r, message = FALSE}
 #####################################
@@ -230,11 +243,138 @@ rf.retina.rpe.comp
 
 varImpPlot(rf.retina.rpe.comp, scale = TRUE, n.var = 50, cex = 0.45, pt.cex = 0.75, main = "Top 50 Most Important Genes")
 
-impt = importance(rf.retina.rpe.comp, scale = TRUE)
+impt.retina.rpe = importance(rf.retina.rpe.comp, scale = TRUE)
 
-genes.acc = impt[order(impt[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
-genes.gini = impt[order(impt[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
+sum(impt.retina.rpe[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))
+
+genes.acc = impt.retina.rpe[order(impt.retina.rpe[, "MeanDecreaseAccuracy"], decreasing = TRUE), ][1:50, ]
+genes.gini = impt.retina.rpe[order(impt.retina.rpe[, "MeanDecreaseGini"], decreasing = TRUE), ][1:50, ]
 
 length(intersect(rownames(genes.acc), rownames(genes.gini)))
+
+sig.genes.list.retina.rpe = rownames(impt.retina.rpe)[which(impt.retina.rpe[, "MeanDecreaseAccuracy"] >= qnorm(0.95, mean = 0, sd = 1))]
 ```
 
+# Validating Random Forests
+
+In the Leo Breiman implementation of random forests (the *randomForest* package we're using), they propose using the mean decrease in accuracy as a sort of permutation test statistic that you can map to a standard normal distribution. As such, for validating the genes that appear "most important" in the random forests, let's consider the genes for which their mean decrease in accuracy is statistically significant by permutation test. 
+
+```{r, message = FALSE}
+load("~/Documents/git/unified_gene_expression/data/lengthScaledTPM_processed.Rdata")
+load("~/Documents/git/unified_gene_expression/data/core_metaData.Rdata")
+
+core_info = core_tight
+
+lengthScaledTPM <- lengthScaledTPM_qsmooth_highExp_remove_lowGenes
+
+lengthScaledTPM <- lengthScaledTPM[,!(is.na(lengthScaledTPM[1,]))]
+
+perplexities = seq(10, 50, by = 10)
+############################
+# Retina
+############################
+for(p in perplexities){
+  # All genes
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM)
+
+  p1 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p1)
+  
+  # RF genes removed
+  sig.genes.indices = which(rownames(lengthScaledTPM) %in% sig.genes.list.retina)
+  lengthScaledTPM.sig.genes = lengthScaledTPM[-(sig.genes.indices), ]
+  
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM.sig.genes)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM.sig.genes)
+  
+  p2 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p2)
+}
+
+############################
+# RPE
+############################
+for(p in perplexities){
+  # All genes
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM)
+
+  p1 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p1)
+  
+  # RF genes removed
+  sig.genes.indices = which(rownames(lengthScaledTPM) %in% sig.genes.list.rpe)
+  lengthScaledTPM.sig.genes = lengthScaledTPM[-(sig.genes.indices), ]
+  
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM.sig.genes)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM.sig.genes)
+  
+  p2 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p2)
+}
+
+############################
+# Retina+RPE
+############################
+for(p in perplexities){
+  # All genes
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM)
+
+  p1 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p1)
+  
+  # RF genes removed
+  sig.genes.indices = which(rownames(lengthScaledTPM) %in% sig.genes.list.retina.rpe)
+  lengthScaledTPM.sig.genes = lengthScaledTPM[-(sig.genes.indices), ]
+  
+  set.seed(47)
+  tsne_out <- Rtsne(as.matrix(log2(t(lengthScaledTPM.sig.genes)+1)),perplexity = p, check_duplicates = FALSE, theta=0.0 )
+
+  tsne_plot <- data.frame(tsne_out$Y)
+  tsne_plot$sample_accession <- colnames(lengthScaledTPM.sig.genes)
+  
+  p2 = tsne_plot %>% left_join(.,core_info)  %>%
+    ggplot(.,aes(x=X1,y=X2,colour=Tissue,shape=Tissue)) + 
+    geom_point(size=4) + scale_shape_manual(values=c(0:20,35:50)) +
+    ggtitle(paste0("t-sne. Perplexity = ", p)) + 
+    coord_cartesian(xlim = c(-50, 50), ylim = c(-50, 50))
+  print(p2)
+}
+```
