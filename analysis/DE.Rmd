@@ -12,12 +12,7 @@ source('~/Documents/git/scripts/theme_Publication.R')
 
 library(IHW)
 library(DESeq2)
-#library(data.table)
 library(tidyverse)
-#library(stringr)
-#library(limma)
-#library(pheatmap)
-#library(ggrepel)
 library(fdrtool)
 library(Rtsne)
 library(biomaRt)
@@ -45,7 +40,6 @@ DESeq2Table <- DESeq(dds)
 DESeq2Res <- results(DESeq2Table, filterFun=ihw, addMLE=TRUE)
 print(head(DESeq2Res))
 print(table(DESeq2Res$padj < 0.05))
-# 15913 initially
 
 # hist of pvalues
 hist(DESeq2Res$pvalue, col = "lavender", main = "Retina vs RPE, no correction", xlab = "p-values")
@@ -118,7 +112,6 @@ DESeq2Table <- DESeq(dds)
 DESeq2Res <- results(DESeq2Table, filterFun=ihw, contrast = c("Tissue", "Retina", "RPE"), addMLE=TRUE)
 print(head(DESeq2Res))
 print(table(DESeq2Res$padj < 0.05))
-# 15881 initially
 
 # hist of pvalues
 hist(DESeq2Res$pvalue, col = "lavender", main = "Retina vs RPE, no correction", xlab = "p-values")
@@ -164,4 +157,3 @@ length(intersect(out.sig$Gene, out.sig.study.correct$Gene))
 
 # GO term annotation analysis
 We conduct GO term annotation using the PANTHER classification system (http://pantherdb.org/tools/compareToRefList.jsp), by GeneOntology. This is performed through the corresponding web app.
-
